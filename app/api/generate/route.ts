@@ -50,7 +50,7 @@ Provide the anchor texts along with associated metrics like keyword search volum
             body: JSON.stringify({
                 model: "gpt-4o-mini",
                 messages: [
-                    { role: "system", content: "You are a helpful SEO assistant." },
+                    { role: "system", content: "You are a very helpful SEO and backlinks assistant." },
                     { role: "user", content: prompt },
                 ],
                 max_tokens: 150,

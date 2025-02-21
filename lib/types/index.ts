@@ -22,8 +22,6 @@ export interface AnchorTextsResult {
 
 export interface ResultType {
     anchorTexts: AnchorTextsResult | string;
-    metrics: {
-        keywordCount: number;
-        // You can extend this with additional metrics if needed
-    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    metrics: any;
 }

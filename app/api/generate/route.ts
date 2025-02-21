@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
@@ -9,38 +10,152 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Target URL is required" }, { status: 400 });
         }
 
-        // 1. Fetch keyword data from Ahrefs API
-        const ahrefsUrl = `https://apiv2.ahrefs.com?from=backlinks&limit=100&target=${targetUrl}&mode=prefix&token=${process.env.AHREFS_API_KEY}`;
+        const currentDate = new Date();
+        const formattedDate = currentDate.toISOString().split("T")[0]; // e.g. "2025-02-21"
+        console.log("Formatted Date:", formattedDate);
 
 
-        const ahrefsResponse = await fetch(ahrefsUrl);
+        // Options for Ahrefs API calls.
+        const options = {
+            method: "GET",
+            headers: {
+                Accept: "application/json, application/xml",
+                Authorization: `Bearer ${process.env.AHREFS_API_KEY}`,
+            },
+        };
+
+        // 1️⃣ Fetch organic keywords for the target URL.
+        const organicKeywordsUrl = `https://api.ahrefs.com/v3/site-explorer/organic-keywords?target=${encodeURIComponent(
+            targetUrl
+        )}&country=de&limit=100&select=keyword,volume,keyword_difficulty&date=${formattedDate}&token=${process.env.AHREFS_API_KEY}`;
+
+        const ahrefsResponse = await fetch(organicKeywordsUrl, options);
         if (!ahrefsResponse.ok) {
             const errorBody = await ahrefsResponse.text();
-            console.error('Ahrefs API Error:', {
+            console.error("Ahrefs API Error:", {
                 status: ahrefsResponse.status,
-                url: ahrefsUrl,
-                error: errorBody
+                url: organicKeywordsUrl,
+                error: errorBody,
             });
             throw new Error(`Ahrefs API Error: ${ahrefsResponse.statusText}`);
         }
 
         const ahrefsData = await ahrefsResponse.json();
-        const keywords: string[] = ahrefsData.keywords || [];
+        console.log("Ahrefs Organic Keywords Response:", JSON.stringify(ahrefsData, null, 2));
 
-        // 2. Generate prompt for OpenAI API
+        // Try to get keywords from either 'data' or 'keywords' property.
+        const keywordResults: any[] = ahrefsData.data || ahrefsData.keywords || [];
+
+        // 2️⃣ Filter keywords:
+        const filteredKeywords = keywordResults.filter((k) => {
+            const vol = Number(k.volume);
+            const kd = Number(k.keyword_difficulty);
+            const keyword = (k.keyword || "").toLowerCase();
+            return vol >= 50 && kd < 50 && (!topic || keyword.includes(topic.toLowerCase()));
+        });
+
+        let refinedKeywords: string[] = filteredKeywords.map((k) => k.keyword);
+
+        // 3️⃣ If no organic keywords are found, fetch competitor keywords.
+        if (refinedKeywords.length === 0) {
+            console.warn("No organic keywords found meeting criteria. Fetching competitor keywords.");
+
+            // Build the Top Pages API URL.
+            const topPagesUrl = `https://api.ahrefs.com/v3/site-explorer/top-pages?target=${encodeURIComponent(
+                targetUrl
+            )}&country=de&limit=5&select=url&date=${formattedDate}&token=${process.env.AHREFS_API_KEY}`;
+
+            const topPagesResponse = await fetch(topPagesUrl, options);
+            if (!topPagesResponse.ok) {
+                const errorBody = await topPagesResponse.text();
+                console.error("Ahrefs Top Pages API Error:", {
+                    status: topPagesResponse.status,
+                    url: topPagesUrl,
+                    error: errorBody,
+                });
+            } else {
+                const topPagesData = await topPagesResponse.json();
+                console.log("Ahrefs Top Pages Response:", JSON.stringify(topPagesData, null, 2));
+
+                // Try to get competitor pages from either 'data' or 'pages'
+                const competitorPages: any[] = topPagesData.data || topPagesData.pages || [];
+                const competitorUrls = competitorPages.map((page) => page.url);
+                console.log("Competitor URLs:", competitorUrls);
+
+                // For each competitor URL, fetch organic keywords.
+                const competitorKeywordsArrays = await Promise.all(
+                    competitorUrls.map(async (url) => {
+                        const competitorOrganicUrl = `https://api.ahrefs.com/v3/site-explorer/organic-keywords?target=${encodeURIComponent(
+                            url
+                        )}&country=de&limit=100&select=keyword,volume,keyword_difficulty&date=${formattedDate}&token=${process.env.AHREFS_API_KEY}`;
+                        const compResponse = await fetch(competitorOrganicUrl, options);
+                        if (!compResponse.ok) {
+                            console.error("Ahrefs Competitor Organic API Error for URL:", url, await compResponse.text());
+                            return [];
+                        }
+                        const compData = await compResponse.json();
+                        return compData.data || compData.keywords || [];
+                    })
+                );
+
+                const competitorKeywords = competitorKeywordsArrays.flat();
+
+                const filteredCompetitorKeywords = competitorKeywords.filter((k) => {
+                    const vol = Number(k.volume);
+                    const kd = Number(k.keyword_difficulty);
+                    const keyword = (k.keyword || "").toLowerCase();
+                    return vol >= 50 && kd < 50 && (!topic || keyword.includes(topic.toLowerCase()));
+                });
+
+                refinedKeywords = filteredCompetitorKeywords.map((k) => k.keyword);
+            }
+        }
+
+        console.log("Final Refined Keywords:", refinedKeywords);
+
+        // 4️⃣ Build the OpenAI prompt.
         const prompt = `
-Using the following keywords: ${keywords.join(", ")}
-${topic ? `and considering the niche: ${topic}` : ""}
-Generate several types of SEO-optimized anchor texts for a backlink:
-- Exact Match (e.g., using the exact keyword)
-- Partial Match (e.g., slight variation)
-- Branded (e.g., including a brand name)
-- Natural/LSI variation
-- Generic
-Provide the anchor texts along with associated metrics like keyword search volume and difficulty.
-`;
+Given the following refined keywords: [${refinedKeywords.join(", ")}] from the website ${targetUrl},
+and considering the business niche: ${topic || "general"},
+generate a structured JSON object with SEO-optimized anchor text suggestions.
+The JSON object should have the following structure:
+{
+  "primary": {
+      "text": "Primary anchor text suggestion using an exact match",
+      "searchVolume": "Estimated search volume",
+      "difficulty": "Estimated keyword difficulty"
+  },
+  "alternatives": [
+      {
+          "type": "Partial Match",
+          "text": "Anchor text suggestion variation",
+          "searchVolume": "Estimated search volume",
+          "difficulty": "Estimated keyword difficulty"
+      },
+      {
+          "type": "Branded",
+          "text": "Anchor text suggestion including a brand name",
+          "searchVolume": "Estimated search volume",
+          "difficulty": "Estimated keyword difficulty"
+      },
+      {
+          "type": "Natural/LSI",
+          "text": "Anchor text suggestion with semantic variation",
+          "searchVolume": "Estimated search volume",
+          "difficulty": "Estimated keyword difficulty"
+      },
+      {
+          "type": "Generic",
+          "text": "Generic anchor text suggestion",
+          "searchVolume": "Estimated search volume",
+          "difficulty": "Estimated keyword difficulty"
+      }
+  ]
+}
+Ensure that the suggestions are realistic and diverse to help improve SEO rankings.
+    `;
 
-        // 3. Call OpenAI API for anchor text generation using Chat Completions
+        // 5️⃣ Call OpenAI API.
         const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -53,9 +168,8 @@ Provide the anchor texts along with associated metrics like keyword search volum
                     { role: "system", content: "You are a very helpful SEO and backlinks assistant." },
                     { role: "user", content: prompt },
                 ],
-                max_tokens: 150,
+                max_tokens: 300,
                 temperature: 0.7,
-                store: true,
             }),
         });
 
@@ -66,9 +180,6 @@ Provide the anchor texts along with associated metrics like keyword search volum
         }
 
         const openaiData = await openaiResponse.json();
-        console.log("OpenAI response data:", openaiData);
-
-        // Validate response structure before accessing properties
         if (
             !openaiData.choices ||
             openaiData.choices.length === 0 ||
@@ -79,17 +190,21 @@ Provide the anchor texts along with associated metrics like keyword search volum
             throw new Error("Unexpected OpenAI API response structure");
         }
 
-        const anchorTexts = openaiData.choices[0].message.content.trim();
+        let anchorTexts;
+        try {
+            anchorTexts = JSON.parse(openaiData.choices[0].message.content.trim());
+        } catch {
+            console.warn("Failed to parse OpenAI response as JSON. Returning raw text.");
+            anchorTexts = openaiData.choices[0].message.content.trim();
+        }
 
-
-        // 4. Return processed data
         return NextResponse.json({
             anchorTexts,
             metrics: {
-                keywordCount: keywords.length,
+                keywordCount: refinedKeywords.length,
+                refinedKeywords,
             },
         });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
         console.error("Error:", error.message);
         return NextResponse.json({ error: "Internal server error" }, { status: 500 });

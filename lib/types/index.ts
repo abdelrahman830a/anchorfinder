@@ -1,6 +1,9 @@
 export type Data = {
-    anchorTexts?: any;
-    metrics?: any;
+    anchorTexts?: AnchorTextsResult | string;
+    metrics?: {
+        keywordCount?: number;
+        // Add other specific metric properties here
+    };
     error?: string;
     keywordCount?: number;
 };

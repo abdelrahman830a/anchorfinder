@@ -89,6 +89,7 @@ Provide the anchor texts along with associated metrics like keyword search volum
                 keywordCount: keywords.length,
             },
         });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
         console.error("Error:", error.message);
         return NextResponse.json({ error: "Internal server error" }, { status: 500 });
